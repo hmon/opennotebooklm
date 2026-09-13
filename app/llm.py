@@ -29,7 +29,14 @@ class LLMError(RuntimeError):
 @functools.cache
 def client() -> httpx.Client:
     headers = {"Authorization": f"Bearer {LLAMA_API_KEY}"} if LLAMA_API_KEY else {}
-    return httpx.Client(base_url=LLAMA_URL, timeout=LLAMA_TIMEOUT, headers=headers)
+    # Retries cover connection failures only: the server is reached through an
+    # SSH tunnel that can drop, and that is not the model declining.
+    return httpx.Client(
+        base_url=LLAMA_URL,
+        timeout=LLAMA_TIMEOUT,
+        headers=headers,
+        transport=httpx.HTTPTransport(retries=3),
+    )
 
 
 def _chat(

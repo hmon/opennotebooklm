@@ -35,14 +35,29 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {LLAMA_API_KEY}"} if LLAMA_API_KEY else {}
 
 
+def _transport() -> httpx.HTTPTransport:
+    """Retry on connection failures only.
+
+    The model servers are reached through an SSH tunnel that occasionally drops
+    and reconnects. A blink of the transport is not the model declining, and
+    should not be reported as one. Retries here never apply to an HTTP error
+    status, so a real refusal still surfaces immediately.
+    """
+    return httpx.HTTPTransport(retries=3)
+
+
 @functools.cache
 def embed_client() -> httpx.Client:
-    return httpx.Client(base_url=EMBED_URL, timeout=MODEL_TIMEOUT, headers=_headers())
+    return httpx.Client(
+        base_url=EMBED_URL, timeout=MODEL_TIMEOUT, headers=_headers(), transport=_transport()
+    )
 
 
 @functools.cache
 def rerank_client() -> httpx.Client:
-    return httpx.Client(base_url=RERANK_URL, timeout=MODEL_TIMEOUT, headers=_headers())
+    return httpx.Client(
+        base_url=RERANK_URL, timeout=MODEL_TIMEOUT, headers=_headers(), transport=_transport()
+    )
 
 
 def _embed(texts: list[str]) -> list[list[float]]:

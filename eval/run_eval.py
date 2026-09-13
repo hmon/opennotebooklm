@@ -10,8 +10,11 @@ leaking past the corpus boundary.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as futures
 import json
+import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -62,52 +65,88 @@ def unsupported_claims(result: dict) -> tuple[int, int]:
     return bad, total
 
 
-def run(corpus_id: int, cases: list[dict]) -> list[dict]:
-    rows = []
-    for case in cases:
-        started = time.time()
-        retrieved = hybrid_retrieve(corpus_id, case["question"])
-        recalled = None
-        if case.get("must_retrieve"):
-            files = {
-                db.fetchone(
-                    "SELECT file_name FROM documents WHERE id = %s", (p.document_id,)
-                )["file_name"]
-                for p in retrieved
-            }
-            recalled = case["must_retrieve"] in files
+def run_case(corpus_id: int, case: dict) -> dict:
+    started = time.time()
+    retrieved = hybrid_retrieve(corpus_id, case["question"])
+    recalled = None
+    if case.get("must_retrieve"):
+        files = {
+            db.fetchone("SELECT file_name FROM documents WHERE id = %s", (p.document_id,))[
+                "file_name"
+            ]
+            for p in retrieved
+        }
+        recalled = case["must_retrieve"] in files
 
-        result = answer_question(corpus_id, case["question"])
-        answer = (result.get("answer") or "").lower()
+    result = answer_question(corpus_id, case["question"])
+    answer = (result.get("answer") or "").lower()
 
-        status_ok = result["status"] == case["expect"] or (
-            case["expect"] == "insufficient_evidence"
-            and result["status"] in ("insufficient_evidence", "verification_failed")
-        )
-        contains = all(s.lower() in answer for s in case.get("must_contain", []))
-        excludes = not any(s.lower() in answer for s in case.get("must_not_contain", []))
-        bad_cites, total_cites = unsupported_claims(result)
+    status_ok = result["status"] == case["expect"] or (
+        case["expect"] == "insufficient_evidence"
+        and result["status"] in ("insufficient_evidence", "verification_failed")
+    )
+    contains = all(s.lower() in answer for s in case.get("must_contain", []))
+    excludes = not any(s.lower() in answer for s in case.get("must_not_contain", []))
+    bad_cites, total_cites = unsupported_claims(result)
 
-        rows.append(
-            {
-                "id": case["id"],
-                "class": case["class"],
-                "expect": case["expect"],
-                "status": result["status"],
-                "status_ok": status_ok,
-                "contains": contains,
-                "excludes": excludes,
-                "recalled": recalled,
-                "bad_cites": bad_cites,
-                "total_cites": total_cites,
-                "pass": status_ok and contains and excludes and bad_cites == 0,
-                "secs": round(time.time() - started, 1),
-                "answer": result.get("answer", ""),
-            }
-        )
-        mark = "PASS" if rows[-1]["pass"] else "FAIL"
-        print(f"  [{mark}] {case['id']}  {result['status']:<22} {rows[-1]['secs']:>5}s")
-    return rows
+    return {
+        "id": case["id"],
+        "class": case["class"],
+        "expect": case["expect"],
+        "status": result["status"],
+        "status_ok": status_ok,
+        "contains": contains,
+        "excludes": excludes,
+        "recalled": recalled,
+        "bad_cites": bad_cites,
+        "total_cites": total_cites,
+        "pass": status_ok and contains and excludes and bad_cites == 0,
+        "secs": round(time.time() - started, 1),
+        "answer": result.get("answer", ""),
+    }
+
+
+def run(corpus_id: int, cases: list[dict], workers: int = 1) -> list[dict]:
+    """Run the cases, optionally several at a time.
+
+    The model server has four slots, and a case spends much of its wall time in
+    retrieval and database work rather than generation. Concurrency is modest
+    on a CPU-only host, where a single request already occupies every thread:
+    expect roughly 1.3x, not 4x.
+    """
+    printing = threading.Lock()
+
+    def announce(row: dict) -> None:
+        with printing:
+            mark = "PASS" if row["pass"] else "FAIL"
+            print(f"  [{mark}] {row['id']:<3} {row['status']:<22} {row['secs']:>6}s", flush=True)
+
+    if workers <= 1:
+        rows = []
+        for case in cases:
+            row = run_case(corpus_id, case)
+            announce(row)
+            rows.append(row)
+        return rows
+
+    by_id: dict[str, dict] = {}
+    with futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = {pool.submit(run_case, corpus_id, case): case for case in cases}
+        for future in futures.as_completed(pending):
+            case = pending[future]
+            try:
+                row = future.result()
+            except Exception as exc:  # noqa: BLE001 - one bad case must not sink the run
+                row = {
+                    "id": case["id"], "class": case["class"], "expect": case["expect"],
+                    "status": f"error: {exc}", "status_ok": False, "contains": False,
+                    "excludes": False, "recalled": None, "bad_cites": 0, "total_cites": 0,
+                    "pass": False, "secs": 0.0, "answer": "",
+                }
+            announce(row)
+            by_id[case["id"]] = row
+    # Report in the order the cases were written, not the order they finished.
+    return [by_id[c["id"]] for c in cases if c["id"] in by_id]
 
 
 def report(rows: list[dict]) -> int:
@@ -161,6 +200,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", default="__eval__")
     parser.add_argument("--only", help="comma-separated case ids or classes")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.getenv("EVAL_WORKERS", "4")),
+        help="cases to run at once (1 to disable)",
+    )
     args = parser.parse_args()
 
     db.init()
@@ -171,8 +216,11 @@ def main() -> int:
 
     print(f"Ingesting fixtures into corpus '{args.corpus}'...")
     corpus_id = setup_corpus(args.corpus)
-    print(f"Running {len(cases)} cases...\n")
-    return report(run(corpus_id, cases))
+    print(f"Running {len(cases)} cases, {args.workers} at a time...\n")
+    started = time.time()
+    rows = run(corpus_id, cases, workers=args.workers)
+    print(f"\nWall time: {time.time() - started:.0f}s")
+    return report(rows)
 
 
 if __name__ == "__main__":
