@@ -5,11 +5,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://onb:onb@localhost:5433/onb")
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
+# llama.cpp's server, speaking the OpenAI chat-completions API. Its JSON-schema
+# support compiles the schema into a decoding grammar, so malformed structured
+# output is prevented rather than repaired after the fact.
+LLAMA_URL = os.getenv("LLAMA_URL", "http://localhost:8080")
+LLAMA_MODEL = os.getenv("LLAMA_MODEL", "qwen3.5-9b")
 # A local model can stall or run away. Both must fail the stage, not hang the request.
-OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "180"))
-OLLAMA_MAX_TOKENS = int(os.getenv("OLLAMA_MAX_TOKENS", "1500"))
+LLAMA_TIMEOUT = float(os.getenv("LLAMA_TIMEOUT", "300"))
+LLAMA_MAX_TOKENS = int(os.getenv("LLAMA_MAX_TOKENS", "1500"))
 
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 EMBED_DIM = 384

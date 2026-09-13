@@ -83,10 +83,14 @@ if you know the answer yourself. Knowing something from outside the sources is
 not evidence.
 
 unsupported_premises is only for something the question ASSERTS as already
-true. Something the question merely ASKS FOR is not a premise: it belongs in
-missing_information. "Why was Germany chosen?" asserts that Germany was chosen.
-"Which country was chosen?" asserts nothing. Most questions have no unsupported
-premise, so this list is usually empty.
+true about the world. Something the question merely ASKS FOR is not a premise:
+it belongs in missing_information. "Why was Germany chosen?" asserts that
+Germany was chosen. "Which country was chosen?" asserts nothing. Most questions
+have no unsupported premise, so this list is usually empty.
+
+Never list an assumption about the sources themselves. "The question assumes the
+sources cover this topic" is not a premise; that situation is plain
+INSUFFICIENT with the gap named in missing_information.
 
 If the sources give conflicting answers, that is SUFFICIENT and answerable=true.
 A disagreement between sources is something the sources establish, and reporting

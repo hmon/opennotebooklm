@@ -36,8 +36,23 @@ and prose that says more than its claims is never published.
 
 ```bash
 docker compose up -d          # Postgres 17 + pgvector on :5433
-ollama pull qwen3.5:9b        # the reasoning engine
+brew install llama.cpp
 uv sync
+```
+
+Start the model server, which downloads the weights on first run (about 5.7 GB).
+`--no-mmproj` skips the vision projector this repo ships, and `--reasoning-budget 0`
+turns off thinking: every stage here is a small judgement, so reasoning text only
+adds latency.
+
+```bash
+llama-server -hf unsloth/Qwen3.5-9B-GGUF:Q4_K_M \
+  --port 8080 --ctx-size 8192 --jinja --no-mmproj --reasoning-budget 0
+```
+
+Then the app:
+
+```bash
 uv run uvicorn app.main:app --reload
 ```
 
@@ -53,7 +68,7 @@ Copy `.env.example` to `.env`. The settings that matter:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OLLAMA_MODEL` | `qwen3.5:9b` | The reasoning engine |
+| `LLAMA_URL` | `http://localhost:8080` | Where llama-server is listening |
 | `CHUNK_TOKENS` | `500` | Target chunk size, in words |
 | `CHUNK_OVERLAP` | `0.15` | Fraction of a chunk carried into the next |
 | `RERANK_TOP_K` | `10` | Passages sent to the grounding stages |
@@ -80,7 +95,7 @@ It reports retrieval recall, abstention accuracy, false answer rate, citation
 precision, and unsupported claim rate, and exits non-zero if any answer was
 published without support.
 
-Measured on the bundled fixtures with `qwen3.5:9b`, all 17 cases passing:
+Measured on the bundled fixtures with Qwen3.5-9B (Q4_K_M), all 17 cases passing:
 
 | Metric | Result |
 |---|---|
@@ -102,6 +117,11 @@ costs several small model calls plus one more per claim to verify.
 ```bash
 uv run pytest                 # the guards themselves; no database or model needed
 ```
+
+Structured stages are schema-constrained: llama.cpp compiles each Pydantic
+schema into a decoding grammar, so the model cannot emit output that violates
+it. The parser still repairs near-JSON, because a stage that fails to parse
+becomes an abstention and quietly costs answer quality.
 
 ## API
 

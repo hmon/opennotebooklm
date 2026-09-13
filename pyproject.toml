@@ -11,13 +11,13 @@ dependencies = [
     "pgvector>=0.3.6",
     "pydantic>=2.9",
     "python-dotenv>=1.0",
-    "ollama>=0.4",
+    "httpx>=0.28",
     "sentence-transformers>=3.3",
     "pymupdf>=1.25",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.3", "httpx>=0.28"]
+dev = ["pytest>=8.3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

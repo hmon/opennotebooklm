@@ -1,4 +1,4 @@
-"""Ollama access and the structured contracts each pipeline stage speaks.
+"""llama.cpp access and the structured contracts each pipeline stage speaks.
 
 The model is a language engine only. Nothing here is trusted: every stage's
 output is re-checked against the corpus in grounding.py.
@@ -10,10 +10,10 @@ import functools
 import re
 from typing import Literal
 
-import ollama
+import httpx
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from app.config import OLLAMA_HOST, OLLAMA_MAX_TOKENS, OLLAMA_MODEL, OLLAMA_TIMEOUT
+from app.config import LLAMA_MAX_TOKENS, LLAMA_MODEL, LLAMA_TIMEOUT, LLAMA_URL
 
 
 class LLMError(RuntimeError):
@@ -21,8 +21,45 @@ class LLMError(RuntimeError):
 
 
 @functools.cache
-def client() -> ollama.Client:
-    return ollama.Client(host=OLLAMA_HOST, timeout=OLLAMA_TIMEOUT)
+def client() -> httpx.Client:
+    return httpx.Client(base_url=LLAMA_URL, timeout=LLAMA_TIMEOUT)
+
+
+def _chat(
+    messages: list[dict],
+    *,
+    schema: type[BaseModel] | None = None,
+    temperature: float = 0.0,
+    max_tokens: int | None = None,
+) -> str:
+    """One call to llama-server's OpenAI-compatible chat endpoint.
+
+    When a schema is given, llama.cpp compiles it into a decoding grammar, so
+    the model cannot emit output that violates it. Thinking is disabled: every
+    stage here is a small judgement, and reasoning text only adds latency and
+    another thing to parse.
+    """
+    body: dict = {
+        "model": LLAMA_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens or LLAMA_MAX_TOKENS,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    if schema is not None:
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema.__name__,
+                # by_alias=False keeps field names as property names; the
+                # accepted synonyms stay a parsing concession, not a contract.
+                "schema": schema.model_json_schema(by_alias=False),
+                "strict": True,
+            },
+        }
+    response = client().post("/v1/chat/completions", json=body)
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"] or ""
 
 
 def call[T: BaseModel](schema: type[T], system: str, user: str, *, temperature: float = 0.0) -> T:
@@ -38,18 +75,7 @@ def call[T: BaseModel](schema: type[T], system: str, user: str, *, temperature: 
     last: Exception | None = None
     for _ in range(2):
         try:
-            response = client().chat(
-                model=OLLAMA_MODEL,
-                messages=messages,
-                format=schema.model_json_schema(),
-                think=False,
-                options={
-                    "temperature": temperature,
-                    "num_ctx": 8192,
-                    "num_predict": OLLAMA_MAX_TOKENS,
-                },
-            )
-            content = response["message"]["content"]
+            content = _chat(messages, schema=schema, temperature=temperature)
             return _coerce(schema, content)
         except Exception as exc:  # noqa: BLE001 - retried, then surfaced as LLMError
             last = exc
@@ -122,26 +148,52 @@ def _json_payload(content: str) -> str:
     return content
 
 
-def classify(labels: tuple[str, ...], system: str, user: str, default: str) -> str:
-    """Ask for one label out of a fixed set, in plain text.
+class _Label(BaseModel):
+    """Single-label answer, constrained by grammar to one of the allowed words."""
 
-    A single-label decision does not need JSON, and a small model answers it far
-    more reliably without one: it replies "ENTAILED", which a schema-constrained
-    parser would reject as malformed and lose. Returns `default` only if no
-    label appears at all, so an unreadable reply fails toward caution.
+    label: str
+
+
+def classify(labels: tuple[str, ...], system: str, user: str, default: str) -> str:
+    """Ask for one label out of a fixed set.
+
+    The allowed values are compiled into the decoding grammar, so the model
+    cannot answer with anything else. Returns `default` only when the server
+    itself fails, so an unreachable model fails toward caution.
     """
+    schema = {
+        "type": "object",
+        "properties": {"label": {"type": "string", "enum": list(labels)}},
+        "required": ["label"],
+        "additionalProperties": False,
+    }
+    body_schema = {"name": "Label", "schema": schema, "strict": True}
     try:
-        response = client().chat(
-            model=OLLAMA_MODEL,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            think=False,
-            options={"temperature": 0.0, "num_ctx": 8192, "num_predict": 24},
+        response = client().post(
+            "/v1/chat/completions",
+            json={
+                "model": LLAMA_MODEL,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": 0.0,
+                "max_tokens": 24,
+                "chat_template_kwargs": {"enable_thinking": False},
+                "response_format": {"type": "json_schema", "json_schema": body_schema},
+            },
         )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"] or ""
     except Exception:  # noqa: BLE001 - an unreachable model is an abstention
         return default
-    content = response["message"]["content"].strip().upper()
-    hits = [(content.find(label), label) for label in labels if label in content]
-    return min(hits)[1] if hits else default
+
+    try:
+        return _Label.model_validate_json(_json_payload(content)).label
+    except Exception:  # noqa: BLE001 - fall back to scanning the text
+        upper = content.strip().upper()
+        hits = [(upper.find(label), label) for label in labels if label in upper]
+        return min(hits)[1] if hits else default
 
 
 # --- source rendering ----------------------------------------------------
