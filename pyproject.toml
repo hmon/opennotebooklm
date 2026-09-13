@@ -1,0 +1,23 @@
+[project]
+name = "opennotebooklm"
+version = "0.1.0"
+description = "Strictly grounded closed-corpus QA"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.20",
+    "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3.6",
+    "pydantic>=2.9",
+    "python-dotenv>=1.0",
+    "ollama>=0.4",
+    "sentence-transformers>=3.3",
+    "pymupdf>=1.25",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3", "httpx>=0.28"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

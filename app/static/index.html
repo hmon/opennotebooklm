@@ -1,0 +1,235 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>opennotebooklm</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #fbfbf9; --fg: #1b1b1a; --muted: #6b6b66; --line: #e2e2dd;
+    --panel: #fff; --accent: #2f5d50; --warn: #8a5a1a; --warnbg: #fdf6ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --fg: #e8e8e4; --muted: #9a9a95; --line: #2e3034;
+      --panel: #1d1f23; --accent: #7fbfa9; --warn: #d9a441; --warnbg: #2a2418;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--line); display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: 300px 1fr 340px; gap: 0; min-height: calc(100vh - 61px); }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } aside, .viewer { border: 0; border-top: 1px solid var(--line); } }
+  aside, .viewer { padding: 18px; border-right: 1px solid var(--line); }
+  .viewer { border-right: 0; border-left: 1px solid var(--line); }
+  section.chat { padding: 18px 24px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  input, select, button, textarea {
+    font: inherit; color: inherit; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px;
+  }
+  input, select, textarea { width: 100%; }
+  button { cursor: pointer; background: var(--accent); color: #fff; border-color: transparent; font-weight: 500; }
+  button.ghost { background: var(--panel); color: var(--fg); border-color: var(--line); font-weight: 400; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .row > input { flex: 1; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li.doc { padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  li.doc small { color: var(--muted); display: block; }
+  .answer { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
+  .answer.abstain { background: var(--warnbg); border-color: var(--warn); }
+  .status { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 8px; }
+  .answer.abstain .status { color: var(--warn); }
+  .qtext { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+  cite-marker, .marker {
+    cursor: pointer; color: var(--accent); font-weight: 600; font-size: 12px;
+    vertical-align: super; padding: 0 1px; background: none; border: 0;
+  }
+  .marker:hover { text-decoration: underline; }
+  .claims { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+  .claim { font-size: 13px; padding: 5px 0; color: var(--muted); }
+  .claim b { color: var(--fg); font-weight: 600; }
+  .tag { font-size: 10px; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; margin-left: 6px; text-transform: uppercase; letter-spacing: .05em; }
+  .quote { background: var(--panel); border-left: 3px solid var(--accent); padding: 10px 12px; border-radius: 0 7px 7px 0; font-size: 13px; margin: 8px 0; }
+  mark { background: rgba(127, 191, 169, .35); color: inherit; padding: 1px 0; }
+  .meta { font-size: 12px; color: var(--muted); }
+  .empty { color: var(--muted); font-size: 13px; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  label.mode { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  label.mode input { width: auto; }
+</style>
+
+<header>
+  <h1>opennotebooklm</h1>
+  <span class="sub">Answers come from your sources only. When they don't cover it, it says so.</span>
+</header>
+
+<main>
+  <aside>
+    <h2>Corpus</h2>
+    <div class="row"><select id="corpus"></select></div>
+    <div class="row">
+      <input id="newCorpus" placeholder="New corpus name">
+      <button class="ghost" id="addCorpus">Add</button>
+    </div>
+
+    <h2 style="margin-top:22px">Sources</h2>
+    <div class="row">
+      <input type="file" id="file" multiple accept=".pdf,.txt,.md,.markdown,.html,.htm">
+    </div>
+    <button id="upload" style="width:100%">Upload</button>
+    <div id="uploadStatus" class="meta" style="margin-top:8px"></div>
+    <ul id="docs" style="margin-top:14px"></ul>
+  </aside>
+
+  <section class="chat">
+    <div class="row">
+      <input id="question" placeholder="Ask a question about these sources">
+      <button id="ask">Ask</button>
+    </div>
+    <label class="mode"><input type="checkbox" id="extractive"> Strict extractive mode</label>
+    <div id="results"></div>
+  </section>
+
+  <div class="viewer">
+    <h2>Source passage</h2>
+    <div id="viewer" class="empty">Click a citation marker to see the exact supporting text.</div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const api = async (url, opts) => {
+  const res = await fetch(url, opts);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  return res.json();
+};
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+let citations = {};   // marker -> citation list
+
+async function loadCorpora(select) {
+  const list = await api("/corpora");
+  $("corpus").innerHTML = list.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
+  if (select) $("corpus").value = select;
+  if (list.length) await loadDocs();
+  else $("docs").innerHTML = '<li class="empty">No corpus yet.</li>';
+}
+
+async function loadDocs() {
+  const id = $("corpus").value;
+  if (!id) return;
+  const docs = await api(`/corpora/${id}/documents`);
+  $("docs").innerHTML = docs.length
+    ? docs.map((d) => `<li class="doc">${esc(d.title)}<small>${esc(d.source_type)} · v${d.version} · ${d.chunks} chunks</small></li>`).join("")
+    : '<li class="empty">No sources yet.</li>';
+}
+
+$("addCorpus").onclick = async () => {
+  const name = $("newCorpus").value.trim();
+  if (!name) return;
+  const c = await api("/corpora", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+  $("newCorpus").value = "";
+  await loadCorpora(c.id);
+};
+
+$("corpus").onchange = loadDocs;
+
+$("upload").onclick = async () => {
+  const files = [...$("file").files];
+  const id = $("corpus").value;
+  if (!files.length || !id) return;
+  $("upload").disabled = true;
+  for (const f of files) {
+    $("uploadStatus").innerHTML = `<span class="spinner"></span> ${esc(f.name)}`;
+    const form = new FormData();
+    form.append("file", f);
+    try {
+      const r = await api(`/corpora/${id}/documents`, { method: "POST", body: form });
+      $("uploadStatus").textContent = `${f.name}: ${r.status}, ${r.chunks} chunks`;
+    } catch (e) {
+      $("uploadStatus").textContent = `${f.name}: ${e.message}`;
+    }
+  }
+  $("upload").disabled = false;
+  $("file").value = "";
+  await loadDocs();
+};
+
+$("question").onkeydown = (e) => { if (e.key === "Enter") $("ask").click(); };
+
+$("ask").onclick = async () => {
+  const q = $("question").value.trim();
+  const id = $("corpus").value;
+  if (!q || !id) return;
+  $("ask").disabled = true;
+  const box = document.createElement("div");
+  box.className = "answer";
+  box.innerHTML = `<div class="qtext">${esc(q)}</div><span class="spinner"></span> searching sources…`;
+  $("results").prepend(box);
+  try {
+    const r = await api(`/corpora/${id}/query`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question: q, mode: $("extractive").checked ? "extractive" : "synthesis" }),
+    });
+    render(box, q, r);
+  } catch (e) {
+    box.className = "answer abstain";
+    box.innerHTML = `<div class="qtext">${esc(q)}</div><div class="status">error</div>${esc(e.message)}`;
+  }
+  $("ask").disabled = false;
+  $("question").value = "";
+};
+
+function render(box, q, r) {
+  const answered = r.status === "answered";
+  box.className = answered ? "answer" : "answer abstain";
+  citations = {};
+  (r.claims || []).forEach((c) => { citations[c.marker] = c.citations; });
+
+  const answer = esc(r.answer).replace(/\[(\d+)\]/g, (_, n) => `<button class="marker" data-n="${n}">[${n}]</button>`);
+  let html = `<div class="qtext">${esc(q)}</div><div class="status">${esc(r.status.replace(/_/g, " "))}</div><div>${answer}</div>`;
+
+  if (r.claims && r.claims.length) {
+    html += '<div class="claims"><h2>Verified claims</h2>' + r.claims.map((c) =>
+      `<div class="claim"><b>[${c.marker}]</b> ${esc(c.text)}<span class="tag">${esc(c.kind)}</span></div>`
+    ).join("") + "</div>";
+  }
+  box.innerHTML = html;
+  box.querySelectorAll(".marker").forEach((b) => { b.onclick = () => showCitations(b.dataset.n); });
+}
+
+async function showCitations(n) {
+  const list = citations[n] || [];
+  if (!list.length) return;
+  $("viewer").innerHTML = '<span class="spinner"></span>';
+  const blocks = [];
+  for (const c of list) {
+    let body;
+    try {
+      const chunk = await api(`/chunks/${encodeURIComponent(c.chunk_id)}`);
+      const rel = c.start_char - chunk.start_char;
+      const relEnd = c.end_char - chunk.start_char;
+      body = rel >= 0 && relEnd <= chunk.text.length
+        ? esc(chunk.text.slice(0, rel)) + "<mark>" + esc(chunk.text.slice(rel, relEnd)) + "</mark>" + esc(chunk.text.slice(relEnd))
+        : esc(chunk.text);
+    } catch {
+      body = esc(c.quote);
+    }
+    const where = [c.page != null ? `Page ${c.page}` : null, c.section].filter(Boolean).join(" · ");
+    blocks.push(
+      `<div class="meta"><b>${esc(c.title)}</b><br>${esc(where || "")}<br>${esc(c.chunk_id)}</div>` +
+      `<div class="quote">${body}</div>`
+    );
+  }
+  $("viewer").innerHTML = blocks.join("<hr style='border:0;border-top:1px solid var(--line);margin:14px 0'>");
+}
+
+loadCorpora();
+</script>
