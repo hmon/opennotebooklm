@@ -65,6 +65,45 @@ def locate_span(span: str, text: str) -> tuple[int, int] | None:
     return None
 
 
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def contradicts(claim_text: str, span: str) -> bool:
+    """Does this span state the same fact with a different figure?
+
+    Verifying that a quote exists in its chunk does not verify that the quote
+    supports the claim it is attached to. A claim can be entailed by one cited
+    span while another cited span flatly disagrees with it, and citing both
+    misrepresents the disagreeing source as support.
+
+    Deliberately narrow: the span must restate every word of the claim and
+    differ on every figure. A false conflict would turn a good answer into a
+    refusal, while a missed one simply leaves today's behaviour unchanged.
+    """
+    claim_numbers = set(_NUMBER.findall(claim_text))
+    span_numbers = set(_NUMBER.findall(span))
+    if not claim_numbers or not span_numbers:
+        return False
+    if claim_numbers & span_numbers:
+        return False
+
+    claim_words = {w for w in _content_words(claim_text) if not w.isdigit()}
+    span_words = {w for w in _content_words(span) if not w.isdigit()}
+    if not claim_words or not span_words:
+        return False
+
+    # One description must contain the other, in whichever direction: a claim
+    # may name "the Alpine Trial" where the source says only "the trial". Mere
+    # overlap is not enough, or "Kestrel reduced error by 12%" would look like
+    # a conflict with "Treatment A reduced error by 17%", which is a
+    # comparison between two different things.
+    return _covers(span_words, claim_words) or _covers(claim_words, span_words)
+
+
+def _covers(words: set[str], subset: set[str]) -> bool:
+    return all(any(_same_word(w, other) for other in words) for w in subset)
+
+
 # --- stage 1: answerability gate ----------------------------------------
 
 _GATE_SYSTEM = f"""{BOUNDARY_CLAUSE}
@@ -278,6 +317,38 @@ def render_evidence(evidence: list[GroundedEvidence]) -> str:
             attrs += f' page="{e.passage.page}"'
         blocks.append(f"<evidence {attrs}>\n{e.span}\n</evidence>")
     return "\n\n".join(blocks)
+
+
+_SENTENCE = re.compile(r"[^.!?\n]+[.!?]?")
+
+
+def sentences_from_passages(
+    passages: list[Passage], ids: list[str]
+) -> list[GroundedEvidence]:
+    """Every sentence of every retrieved passage, as grounded evidence.
+
+    Contradiction detection must not depend on what the extraction stage chose
+    to pull out: if the model quotes only the source that says 2014, the source
+    that says 2015 is still sitting in the retrieved text. These spans come
+    straight from the passage, so they are verbatim by construction.
+    """
+    out: list[GroundedEvidence] = []
+    for eid, passage in zip(ids, passages, strict=True):
+        for match in _SENTENCE.finditer(passage.text):
+            text = match.group(0).strip()
+            if len(text.split()) < 3:
+                continue
+            start = match.start() + (len(match.group(0)) - len(match.group(0).lstrip()))
+            out.append(
+                GroundedEvidence(
+                    evidence_id=eid,
+                    passage=passage,
+                    span=text,
+                    start=start,
+                    end=start + len(text),
+                )
+            )
+    return out
 
 
 # --- stage 3: atomic claims ---------------------------------------------

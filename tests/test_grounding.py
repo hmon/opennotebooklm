@@ -430,3 +430,102 @@ def test_a_claim_adding_detail_still_goes_to_the_verifier(monkeypatch):
         ]
     )
     assert grounding.verify_claims(claims, evidence) == {"C1": "NOT_ENTAILED"}
+
+
+# --- a claim's own evidence disagreeing with it --------------------------
+
+def test_contradiction_detection_needs_the_same_subject():
+    assert grounding.contradicts(
+        "The trial was conducted in 2015.",
+        "The Alpine Trial was conducted at this facility in 2014.",
+    )
+    # Same words, different subjects: a comparison, not a disagreement.
+    assert not grounding.contradicts(
+        "Kestrel reduced error by 12%.", "Treatment A reduced error by 17%."
+    )
+    # Shares a word, describes something else entirely.
+    assert not grounding.contradicts(
+        "The study included 218 participants.", "Dropout was 9 participants."
+    )
+    # Agreeing figures are never a conflict.
+    assert not grounding.contradicts(
+        "The study lasted 12 months.", "Data collection ran for 12 months."
+    )
+
+
+def test_a_disagreeing_source_is_never_cited_as_support(monkeypatch):
+    """Regression: one claim cited both the 2014 and the 2015 source."""
+    evidence = _evidence(
+        monkeypatch,
+        {
+            "E1": "The trial was conducted in 2015.",
+            "E2": "The Alpine Trial was conducted at this facility in 2014.",
+        },
+    )
+    grouped = grounding.group_evidence(evidence)
+    claim = Claim(claim_id="C1", text="The trial was conducted in 2015.", evidence_ids=["E1", "E2"])
+
+    (rewritten,), conflicted = pipeline._split_contradictions([claim], grouped)
+    assert conflicted == {"C1"}
+    assert "disagree" in rewritten.text
+    assert "2014" in rewritten.text and "2015" in rewritten.text
+    assert {"E1", "E2"} == set(rewritten.evidence_ids)
+
+
+def test_an_undisputed_claim_is_left_alone(monkeypatch):
+    evidence = _evidence(monkeypatch, {"E1": "The study included 218 participants."})
+    grouped = grounding.group_evidence(evidence)
+    claim = Claim(claim_id="C1", text="The study included 218 participants.", evidence_ids=["E1"])
+
+    (kept,), conflicted = pipeline._split_contradictions([claim], grouped)
+    assert not conflicted
+    assert kept.text == claim.text
+    assert kept.evidence_ids == ["E1"]
+
+
+def test_a_contradiction_the_claim_did_not_cite_is_still_caught(monkeypatch):
+    """The model chooses what to cite; the corpus decides what is disputed."""
+    evidence = _evidence(
+        monkeypatch,
+        {
+            "E1": "The Alpine Trial was conducted at this facility in 2014.",
+            "E2": "The trial was conducted in 2015.",
+        },
+    )
+    grouped = grounding.group_evidence(evidence)
+    # The claim cites only the 2014 side.
+    claim = Claim(
+        claim_id="C1",
+        text="The Alpine Trial was conducted in 2014.",
+        evidence_ids=["E1"],
+    )
+
+    (rewritten,), conflicted = pipeline._split_contradictions([claim], grouped, evidence)
+    assert conflicted == {"C1"}
+    assert "2014" in rewritten.text and "2015" in rewritten.text
+
+
+def test_sentences_from_passages_are_verbatim_and_locatable():
+    text = "The trial ran in 2015. It enrolled adults.\nA third line here."
+    spans = grounding.sentences_from_passages([passage(text)], ["E1"])
+    assert len(spans) == 3
+    for span in spans:
+        assert text[span.start : span.end] == span.span
+
+
+def test_a_conflict_only_present_in_retrieved_text_is_caught(monkeypatch):
+    """The extraction stage may quote one side; the other side is still there."""
+    cited = _evidence(monkeypatch, {"E1": "The Alpine Trial was conducted in 2014."})
+    other = grounding.sentences_from_passages(
+        [passage("Record A-771. The trial was conducted in 2015. Status: completed.", "chunk_x")],
+        ["E2"],
+    )
+    claim = Claim(
+        claim_id="C1", text="The Alpine Trial was conducted in 2014.", evidence_ids=["E1"]
+    )
+
+    (rewritten,), conflicted = pipeline._split_contradictions(
+        [claim], grounding.group_evidence(cited), cited + other
+    )
+    assert conflicted == {"C1"}
+    assert "2014" in rewritten.text and "2015" in rewritten.text
