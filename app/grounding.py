@@ -125,12 +125,59 @@ def check_answerability(question: str, passages: list[Passage], ids: list[str]) 
     return llm.call(Answerability, _GATE_SYSTEM, user)
 
 
-def gate_passes(result: Answerability) -> tuple[bool, str | None]:
+# Words too common to carry a claim. Kept small on purpose: this list only has
+# to stop function words from making an unrelated premise look grounded.
+_STOPWORDS = frozenset(
+    """a an the and or but if of in on at to for from by with without about
+    is are was were be been being do does did has have had what which who whom
+    whose when where why how was that this these those it its as than then
+    there here we you they he she i me my our your their them his her
+    not no nor any some all both each more most other such only own same so
+    can will just should now does did done""".split()
+)
+
+
+def _content_words(text: str) -> set[str]:
+    return {
+        word
+        for word in re.findall(r"\w+", text.lower(), re.UNICODE)
+        if word not in _STOPWORDS and len(word) > 2
+    }
+
+
+def _same_word(a: str, b: str) -> bool:
+    """Loose match so "conducted" and "conduct" count as the same word."""
+    if a == b:
+        return True
+    stem = 5
+    return len(a) >= stem and len(b) >= stem and a[:stem] == b[:stem]
+
+
+def premise_stated_in_question(premise: str, question: str) -> bool:
+    """Is this actually a premise of the question, or a fact about the sources?
+
+    A model asked for "unsupported premises" will happily list everything it
+    read, and the gate would then abstain on every question. A premise of the
+    question must be traceable to the question: it may not introduce content
+    the question never states. This is the same discipline as checking a quoted
+    span against its chunk, applied to the other end of the pipeline.
+    """
+    premise_words = _content_words(premise)
+    if not premise_words:
+        return False
+    question_words = _content_words(question)
+    return all(
+        any(_same_word(word, other) for other in question_words) for word in premise_words
+    )
+
+
+def gate_passes(result: Answerability, question: str) -> tuple[bool, str | None]:
     """Precision over recall: any doubt abstains (handoff S26)."""
-    if result.unsupported_premises:
-        premises = "; ".join(result.unsupported_premises)
+    premises = [p for p in result.unsupported_premises if premise_stated_in_question(p, question)]
+    if premises:
         return False, (
-            f"The provided sources do not establish the premise of this question: {premises}"
+            "The provided sources do not establish the premise of this question: "
+            + "; ".join(premises)
         )
     if result.sufficiency == "INSUFFICIENT" or not result.answerable:
         missing = "; ".join(result.missing_information)
@@ -337,6 +384,13 @@ def verify_claims(claims: ClaimSet, evidence: list[GroundedEvidence]) -> dict[st
         cited = [item for eid in claim.evidence_ids for item in by_id.get(eid, [])]
         if not cited:
             statuses[claim.claim_id] = "NOT_ENTAILED"
+            continue
+        # A claim that restates its evidence word for word is entailed by
+        # construction. Asking the model is not just wasteful, it is a source
+        # of false negatives: a verifier has been seen calling a claim
+        # AMBIGUOUS when it was character-identical to its own span.
+        if any(locate_span(claim.text, item.span) is not None for item in cited):
+            statuses[claim.claim_id] = "ENTAILED"
             continue
         user = (
             f"{render_evidence(cited)}\n\n"

@@ -13,7 +13,13 @@ from typing import Literal
 import httpx
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from app.config import LLAMA_MAX_TOKENS, LLAMA_MODEL, LLAMA_TIMEOUT, LLAMA_URL
+from app.config import (
+    LLAMA_API_KEY,
+    LLAMA_MAX_TOKENS,
+    LLAMA_MODEL,
+    LLAMA_TIMEOUT,
+    LLAMA_URL,
+)
 
 
 class LLMError(RuntimeError):
@@ -22,7 +28,8 @@ class LLMError(RuntimeError):
 
 @functools.cache
 def client() -> httpx.Client:
-    return httpx.Client(base_url=LLAMA_URL, timeout=LLAMA_TIMEOUT)
+    headers = {"Authorization": f"Bearer {LLAMA_API_KEY}"} if LLAMA_API_KEY else {}
+    return httpx.Client(base_url=LLAMA_URL, timeout=LLAMA_TIMEOUT, headers=headers)
 
 
 def _chat(

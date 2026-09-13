@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     end_char     int NOT NULL,
     text         text NOT NULL,
     tsv          tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
-    embedding    vector(384)
+    embedding    vector(1024)
 );
 CREATE INDEX IF NOT EXISTS chunks_tsv_idx ON chunks USING gin (tsv);
 CREATE INDEX IF NOT EXISTS chunks_embedding_idx ON chunks USING hnsw (embedding vector_cosine_ops);

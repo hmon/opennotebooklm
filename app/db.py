@@ -1,6 +1,7 @@
 import atexit
 from pathlib import Path
 
+import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -31,14 +32,17 @@ pool = ConnectionPool(
 
 
 def init() -> None:
-    """Open the pool and apply schema.sql (idempotent)."""
-    pool.open()
-    with pool.connection() as conn:
+    """Apply schema.sql, then open the pool.
+
+    Order matters: every pooled connection registers the pgvector type, which
+    only exists once schema.sql has created the extension. Applying the schema
+    on a standalone connection first is what lets this work on an empty
+    database rather than only on one that has already been set up.
+    """
+    with psycopg.connect(DATABASE_URL) as conn:
         conn.execute(SCHEMA_PATH.read_text())
         conn.commit()
-    # The vector type only exists after schema.sql ran, so any connection
-    # opened before that has to be configured again.
-    pool.check()
+    pool.open()
     atexit.register(_close)
 
 

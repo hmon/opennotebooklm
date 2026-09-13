@@ -71,7 +71,7 @@ def answer_question(corpus_id: int, question: str, mode: str = "synthesis") -> d
     except LLMError as exc:
         return _persist(corpus_id, question, _abstain("verification_failed", FAILED, detail=str(exc)))
 
-    ok, message = grounding.gate_passes(answerability)
+    ok, message = grounding.gate_passes(answerability, question)
     if not ok:
         return _persist(
             corpus_id,
@@ -80,7 +80,11 @@ def answer_question(corpus_id: int, question: str, mode: str = "synthesis") -> d
                 "insufficient_evidence",
                 message,
                 missing_information=answerability.missing_information,
-                unsupported_premises=answerability.unsupported_premises,
+                unsupported_premises=[
+                    p
+                    for p in answerability.unsupported_premises
+                    if grounding.premise_stated_in_question(p, question)
+                ],
             ),
         )
 

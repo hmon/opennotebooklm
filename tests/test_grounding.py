@@ -78,18 +78,30 @@ def test_citation_offsets_point_into_the_document(monkeypatch):
 # --- the answerability gate ---------------------------------------------
 
 @pytest.mark.parametrize(
-    "result",
+    ("result", "question"),
     [
-        Answerability(sufficiency="INSUFFICIENT", answerable=False, confidence=0.98,
-                      missing_information=["no sample size"]),
-        Answerability(sufficiency="SUFFICIENT", answerable=True, confidence=0.4),
-        Answerability(sufficiency="SUFFICIENT", answerable=True, confidence=0.99,
-                      unsupported_premises=["the trial was in Germany"]),
-        Answerability(sufficiency="SUFFICIENT", answerable=False, confidence=0.9),
+        (
+            Answerability(sufficiency="INSUFFICIENT", answerable=False, confidence=0.98,
+                          missing_information=["no sample size"]),
+            "how many participants?",
+        ),
+        (
+            Answerability(sufficiency="SUFFICIENT", answerable=True, confidence=0.4),
+            "how many participants?",
+        ),
+        (
+            Answerability(sufficiency="SUFFICIENT", answerable=True, confidence=0.99,
+                          unsupported_premises=["the trial was in Germany"]),
+            "The trial was in Germany. Why Germany?",
+        ),
+        (
+            Answerability(sufficiency="SUFFICIENT", answerable=False, confidence=0.9),
+            "how many participants?",
+        ),
     ],
 )
-def test_gate_abstains(result):
-    ok, message = grounding.gate_passes(result)
+def test_gate_abstains(result, question):
+    ok, message = grounding.gate_passes(result, question)
     assert not ok
     assert message
 
@@ -99,25 +111,25 @@ def test_gate_names_the_unsupported_premise():
         sufficiency="SUFFICIENT", answerable=True, confidence=0.99,
         unsupported_premises=["the trial was in Germany"],
     )
-    _, message = grounding.gate_passes(result)
+    _, message = grounding.gate_passes(result, "We know the trial was in Germany. Why Germany?")
     assert "do not establish the premise" in message
     assert "Germany" in message
 
 
 def test_gate_passes_when_evidence_is_sufficient():
     result = Answerability(sufficiency="SUFFICIENT", answerable=True, confidence=0.95)
-    ok, message = grounding.gate_passes(result)
+    ok, message = grounding.gate_passes(result, "how many participants?")
     assert ok and message is None
 
 
 def test_gate_passes_partial_so_the_supported_part_can_be_answered():
     result = Answerability(sufficiency="PARTIAL", answerable=True, confidence=0.9)
-    assert grounding.gate_passes(result)[0]
+    assert grounding.gate_passes(result, "q")[0]
 
 
 def test_gate_tolerates_a_missing_confidence():
     result = Answerability(sufficiency="SUFFICIENT", answerable=True, confidence=None)
-    assert grounding.gate_passes(result)[0]
+    assert grounding.gate_passes(result, "q")[0]
 
 
 # --- claim hygiene -------------------------------------------------------
@@ -352,3 +364,69 @@ def test_several_spans_from_one_source_are_all_kept(monkeypatch):
     quotes = [c["quote"] for c in result["claims"][0]["citations"]]
     assert "The study lasted 12 months." in quotes
     assert len(quotes) == 2
+
+
+# --- premises must belong to the question --------------------------------
+
+def test_a_premise_the_question_states_blocks():
+    question = "We know the Alpine Trial was conducted in Germany. Why was Germany selected?"
+    assert grounding.premise_stated_in_question("the Alpine Trial was conducted in Germany", question)
+
+
+def test_a_premise_the_question_never_states_is_ignored():
+    """The model lists facts about the sources; only the question's own
+    assumptions may block an answer."""
+    question = "In what year was the Alpine Trial conducted?"
+    assert not grounding.premise_stated_in_question(
+        "the Alpine Trial was conducted in 2014 or 2015", question
+    )
+    assert not grounding.premise_stated_in_question(
+        "the laboratory has eleven monitored bedrooms", question
+    )
+
+
+def test_source_enumeration_does_not_cause_abstention():
+    """Regression: a model once returned 77 'premises' describing the corpus."""
+    question = "What was the sample size of the Alpine Trial?"
+    result = Answerability(
+        sufficiency="SUFFICIENT",
+        answerable=True,
+        confidence=0.95,
+        unsupported_premises=[
+            "the trial was conducted in 2015",
+            "the laboratory has eleven monitored bedrooms",
+            "measurement error was reduced by 12%",
+        ],
+    )
+    ok, message = grounding.gate_passes(result, question)
+    assert ok, message
+
+
+def test_morphology_does_not_defeat_the_check():
+    question = "Why was the trial conducted in Germany?"
+    assert grounding.premise_stated_in_question("the trial was conducted in Germany", question)
+
+
+def test_a_claim_restating_its_evidence_needs_no_model(monkeypatch):
+    """Verbatim restatement is entailed by construction, not by opinion."""
+    evidence = _evidence(monkeypatch, {"E1": "Data collection ran for 12 months."})
+
+    def fail(*a, **k):
+        raise AssertionError("the verifier was called for a verbatim restatement")
+
+    monkeypatch.setattr(llm, "classify", fail)
+    claims = ClaimSet(
+        claims=[Claim(claim_id="C1", text="Data collection ran for 12 months.", evidence_ids=["E1"])]
+    )
+    assert grounding.verify_claims(claims, evidence) == {"C1": "ENTAILED"}
+
+
+def test_a_claim_adding_detail_still_goes_to_the_verifier(monkeypatch):
+    evidence = _evidence(monkeypatch, {"E1": "Data collection ran for 12 months."})
+    monkeypatch.setattr(llm, "classify", lambda *a, **k: "NOT_ENTAILED")
+    claims = ClaimSet(
+        claims=[
+            Claim(claim_id="C1", text="Data collection ran for 12 months in Germany.", evidence_ids=["E1"])
+        ]
+    )
+    assert grounding.verify_claims(claims, evidence) == {"C1": "NOT_ENTAILED"}

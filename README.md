@@ -34,25 +34,43 @@ and prose that says more than its claims is never published.
 
 ## Running it
 
+No model runs on the machine hosting this app. Three llama.cpp servers, one per
+model, run on an inference host and are reached over HTTP:
+
+| Port | Model | Role |
+|---|---|---|
+| 8090 | Qwen3-14B (Q4_K_M) | reasoning and verification |
+| 8091 | BGE-M3 (Q8_0) | embeddings, 1024-dim, multilingual |
+| 8092 | BGE-reranker-v2-m3 (Q8_0) | reranking |
+
+### Model servers
+
+On the inference host, with llama.cpp built at `/opt/llama.cpp` and GGUFs in
+`/opt/models`, each model gets its own `llama-server` bound to localhost:
+
+```bash
+llama-server --model /opt/models/bge-m3-Q8_0.gguf --alias bge-m3 \
+  --host 127.0.0.1 --port 8091 --api-key "$KEY" \
+  --embedding --pooling cls --ctx-size 8192 --threads 4 --no-webui
+
+llama-server --model /opt/models/bge-reranker-v2-m3-Q8_0.gguf \
+  --alias bge-reranker-v2-m3 --host 127.0.0.1 --port 8092 --api-key "$KEY" \
+  --reranking --ctx-size 8192 --threads 4 --no-webui
+```
+
+Keep them on `127.0.0.1`. Reach them from the app host with a tunnel rather
+than by exposing them:
+
+```bash
+ssh -N -L 8090:127.0.0.1:8090 -L 8091:127.0.0.1:8091 -L 8092:127.0.0.1:8092 user@host
+```
+
+### The app
+
 ```bash
 docker compose up -d          # Postgres 17 + pgvector on :5433
-brew install llama.cpp
 uv sync
-```
-
-Start the model server, which downloads the weights on first run (about 5.7 GB).
-`--no-mmproj` skips the vision projector this repo ships, and `--reasoning-budget 0`
-turns off thinking: every stage here is a small judgement, so reasoning text only
-adds latency.
-
-```bash
-llama-server -hf unsloth/Qwen3.5-9B-GGUF:Q4_K_M \
-  --port 8080 --ctx-size 8192 --jinja --no-mmproj --reasoning-budget 0
-```
-
-Then the app:
-
-```bash
+cp .env.example .env          # then set LLAMA_API_KEY
 uv run uvicorn app.main:app --reload
 ```
 
@@ -60,7 +78,9 @@ Open http://localhost:8000. Create a corpus, upload PDFs, Markdown, text, or
 HTML, then ask. Click any `[1]` marker to see the exact passage it came from,
 highlighted inside its chunk.
 
-First run downloads the embedding and reranker models (about 1.5 GB).
+Changing `EMBED_MODEL` to a model of a different width means changing
+`EMBED_DIM` and the `vector(1024)` column in `schema.sql`, and re-embedding:
+the client refuses vectors of unexpected width rather than writing them.
 
 ## Configuration
 
@@ -68,7 +88,10 @@ Copy `.env.example` to `.env`. The settings that matter:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LLAMA_URL` | `http://localhost:8080` | Where llama-server is listening |
+| `LLAMA_URL` | `http://localhost:8090` | Reasoning model endpoint |
+| `EMBED_URL` | `http://localhost:8091` | Embedding endpoint |
+| `RERANK_URL` | `http://localhost:8092` | Reranker endpoint |
+| `LLAMA_API_KEY` | none | Sent as a bearer token to all three |
 | `CHUNK_TOKENS` | `500` | Target chunk size, in words |
 | `CHUNK_OVERLAP` | `0.15` | Fraction of a chunk carried into the next |
 | `RERANK_TOP_K` | `10` | Passages sent to the grounding stages |
